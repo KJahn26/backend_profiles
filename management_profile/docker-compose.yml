@@ -1,0 +1,25 @@
+version: '3.8'
+services:
+  api:
+    build: .
+    container_name: management-profile-api
+    ports:
+      - "5095:8080"   # expone el puerto 8080 del contenedor en el 5095 de tu máquina
+    environment:
+      - DB_CONNECTION_STRING=Host=postgres;Database=profiles_db;Username=user_db;Password=1234
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16
+    container_name: postgres-db-management-profile
+    environment:
+      POSTGRES_USER: user_db
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: profiles_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+volumes:
+  postgres_data:
