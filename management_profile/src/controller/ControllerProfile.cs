@@ -27,6 +27,8 @@ public class ProfilesController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<Profile>> AddProfile(Profile profile)
     {
+        //se procesa el mensaje recibido por RabbitMQ, se crea un nuevo perfil con el nombre del mensaje y se guarda en la base de datos
+        //await _profileService.ProcessMessage(profile.Name);
         var nuevo = await _profileService.AddProfileAsync(profile);
         return CreatedAtAction(nameof(GetProfile), new { id = nuevo.Id }, nuevo);
     }

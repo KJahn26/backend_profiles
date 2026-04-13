@@ -5,4 +5,5 @@ public interface IProfileService
     Task<Profile> AddProfileAsync(Profile profile);
     Task<Profile?> UpdateProfileAsync(Profile profile);
     Task<bool> DeleteProfileAsync(string id);
+    Task ProcessMessage(string message);
 }

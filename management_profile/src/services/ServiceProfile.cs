@@ -47,4 +47,18 @@ public class ProfileService : IProfileService
         await _context.SaveChangesAsync();
         return true;
     }
+
+    public async Task ProcessMessage(string message)
+    {
+        Console.WriteLine($"Procesando mensaje: {message}");
+
+        var profile = new Profile
+        {
+            Name = message
+        };
+
+        _context.profiles.Add(profile); 
+
+        await _context.SaveChangesAsync();
+    }
 }
