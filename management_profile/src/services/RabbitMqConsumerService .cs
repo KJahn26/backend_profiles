@@ -3,25 +3,59 @@ using RabbitMQ.Client.Events;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 
+/// <summary>
+/// Servicio en segundo plano encargado de consumir mensajes desde RabbitMQ.
+/// Permite procesar eventos relacionados con la creación y eliminación de empleados
+/// provenientes de otros microservicios, sincronizando la información con el
+/// microservicio de perfiles.
+/// </summary>
 public class RabbitMqConsumerService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
 
+    /// <summary>
+    /// Inicializa una nueva instancia del consumidor de RabbitMQ.
+    /// </summary>
+    /// <param name="scopeFactory">
+    /// Fábrica de scopes utilizada para resolver servicios con ciclo de vida Scoped
+    /// dentro de un BackgroundService fuera del pipeline HTTP.
+    /// </param>
     public RabbitMqConsumerService(IServiceScopeFactory scopeFactory)
     {
         _scopeFactory = scopeFactory;
     }
 
+    /// <summary>
+    /// Método principal ejecutado automáticamente al iniciar el servicio.
+    /// Se encarga de establecer la conexión con RabbitMQ, declarar la cola
+    /// y procesar los mensajes recibidos de manera asincrónica.
+    /// </summary>
+    /// <param name="stoppingToken">
+    /// Token utilizado para cancelar la ejecución del servicio cuando la aplicación se detiene.
+    /// </param>
+    /// <returns>
+    /// Tarea asincrónica que representa la ejecución continua del consumidor.
+    /// </returns>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var factory = new ConnectionFactory
         {
+            /// <summary>
+            /// Dirección del servidor RabbitMQ.
+            /// </summary>
             HostName = "localhost"
         };
 
         var connection = await factory.CreateConnectionAsync();
+
+        /// <summary>
+        /// Canal de comunicación con RabbitMQ.
+        /// </summary>
         var channel = await connection.CreateChannelAsync();
 
+        /// <summary>
+        /// Declaración de la cola desde la cual se consumen los mensajes.
+        /// </summary>
         await channel.QueueDeclareAsync(
             queue: "hello",
             durable: true,
@@ -29,34 +63,89 @@ public class RabbitMqConsumerService : BackgroundService
             autoDelete: false
         );
 
+        /// <summary>
+        /// Consumidor asincrónico de mensajes.
+        /// </summary>
         var consumer = new AsyncEventingBasicConsumer(channel);
 
+        /// <summary>
+        /// Evento ejecutado automáticamente cada vez que llega un mensaje desde RabbitMQ.
+        /// </summary>
         consumer.ReceivedAsync += async (model, ea) =>
         {
             var json = Encoding.UTF8.GetString(ea.Body.ToArray());
 
-            Console.WriteLine($"Mensaje recibido: {json}");
+            var jsonDocument = System.Text.Json.JsonDocument.Parse(json);
 
-            // usamos scope porque estamos fuera del pipeline HTTP
+            /// <summary>
+            /// Se crea un scope manual porque el BackgroundService está fuera del pipeline HTTP.
+            /// </summary>
             using var scope = _scopeFactory.CreateScope();
 
             var profileService =
                 scope.ServiceProvider.GetRequiredService<IProfileService>();
 
+            var emailService =
+                scope.ServiceProvider.GetRequiredService<IEmailService>();
+
             try
             {
-                var employeeMessage = System.Text.Json.JsonSerializer.Deserialize<MessageRabbitMq>(json);
+                var employeeMessage = jsonDocument;
+
                 if (employeeMessage != null)
                 {
+                    /// <summary>
+                    /// Verifica si el perfil ya existe antes de crearlo.
+                    /// </summary>
+                    var exists = await profileService.GetProfileByIdAsync(
+                        employeeMessage.RootElement.GetProperty("Id").GetString()!
+                    );
+
+                    var perfil_creado = exists != null;
+
+                    if (perfil_creado)
+                    {
+                        Console.WriteLine("Perfil ya existe, ignorando mensaje duplicado");
+
+                        await channel.BasicAckAsync(ea.DeliveryTag, false);
+
+                        return;
+                    }
+
+                    /// <summary>
+                    /// Creación automática del perfil basado en el evento recibido.
+                    /// </summary>
                     Profile profile = new Profile
                     {
-                        Id = employeeMessage.Id.ToString(),
-                        Name = employeeMessage.NameUser,
-                        Email = employeeMessage.Email
-                        
+                        Id = employeeMessage.RootElement.GetProperty("Id").ToString(),
+                        Name = employeeMessage.RootElement.GetProperty("NameUser").GetString(),
+                        Email = employeeMessage.RootElement.GetProperty("Email").GetString()
                     };
+
                     await profileService.AddProfileAsync(profile);
-                    return ;
+
+                    /// <summary>
+                    /// Envío de notificación por correo electrónico tras la creación del perfil.
+                    /// </summary>
+                    if (profile.Email != null && profile.Name != null)
+                    {
+                        await emailService.SendProfileCreatedEmailAsync(
+                            profile.Email,
+                            profile.Name
+                        );
+
+                        await channel.BasicAckAsync(ea.DeliveryTag, false);
+                    }
+                    else
+                    {
+                        Console.WriteLine(
+                            "Email o nombre no disponibles, no se enviará notificación."
+                        );
+
+                        await channel.BasicAckAsync(ea.DeliveryTag, false);
+                    }
+
+                    return;
                 }
             }
             catch (System.Text.Json.JsonException ex)
@@ -66,11 +155,16 @@ public class RabbitMqConsumerService : BackgroundService
 
             try
             {
-                var deleteMessage = System.Text.Json.JsonSerializer.Deserialize<MessageRabbitDeleteEmployee>(json);
+                /// <summary>
+                /// Procesamiento del evento de eliminación de empleado.
+                /// </summary>
+                var deleteMessage =
+                    System.Text.Json.JsonSerializer.Deserialize<MessageRabbitDeleteEmployee>(json);
 
                 if (deleteMessage != null)
                 {
                     await profileService.DeleteProfileAsync(deleteMessage.Id.ToString());
+
                     return;
                 }
             }
@@ -80,12 +174,18 @@ public class RabbitMqConsumerService : BackgroundService
             }
         };
 
+        /// <summary>
+        /// Inicio del consumo continuo de mensajes desde la cola.
+        /// </summary>
         await channel.BasicConsumeAsync(
             queue: "hello",
-            autoAck: true,
+            autoAck: false,
             consumer: consumer
         );
 
+        /// <summary>
+        /// Mantiene el servicio activo indefinidamente hasta recibir señal de cancelación.
+        /// </summary>
         await Task.Delay(Timeout.Infinite, stoppingToken);
     }
 }
