@@ -73,8 +73,18 @@ public class RabbitMqConsumerService : BackgroundService
         /// </summary>
         consumer.ReceivedAsync += async (model, ea) =>
         {
-            var json = Encoding.UTF8.GetString(ea.Body.ToArray());
+            /// <summary>
+            /// Obtiene la routing key asociada al mensaje recibido.
+            /// Permite identificar el tipo de evento publicado por el microservicio emisor
+            /// (por ejemplo: creación o eliminación de empleados).
+            /// </summary>
+            var routingkey = ea.RoutingKey;
 
+            var json = Encoding.UTF8.GetString(ea.Body.ToArray());
+            /// <summary>
+            /// Convierte el mensaje JSON recibido en una estructura manipulable
+            /// para extraer los datos necesarios del empleado.
+            /// </summary>
             var jsonDocument = System.Text.Json.JsonDocument.Parse(json);
 
             /// <summary>
@@ -88,89 +98,160 @@ public class RabbitMqConsumerService : BackgroundService
             var emailService =
                 scope.ServiceProvider.GetRequiredService<IEmailService>();
 
-            try
+            /// <summary>
+            /// Procesa el evento de creación de empleado.
+            /// Cuando se recibe este evento desde RabbitMQ, se crea automáticamente
+            /// un perfil asociado en el microservicio de perfiles si aún no existe.
+            /// </summary>
+            if (routingkey == "employee.save")
             {
-                var employeeMessage = jsonDocument;
+                Console.WriteLine("Mensaje recibido: Creación de empleado");
 
-                if (employeeMessage != null)
+                try
                 {
-                    /// <summary>
-                    /// Verifica si el perfil ya existe antes de crearlo.
-                    /// </summary>
-                    var exists = await profileService.GetProfileByIdAsync(
-                        employeeMessage.RootElement.GetProperty("Id").GetString()!
-                    );
+                    var employeeMessage = jsonDocument;
 
-                    var perfil_creado = exists != null;
-
-                    if (perfil_creado)
+                    if (employeeMessage != null)
                     {
-                        Console.WriteLine("Perfil ya existe, ignorando mensaje duplicado");
+                        /// <summary>
+                        /// Verifica si el perfil ya existe antes de crearlo.
+                        /// </summary>
+                        var exists = await profileService.GetProfileByIdAsync(
+                            employeeMessage.RootElement.GetProperty("Id").GetString()!
+                        );
 
-                        await channel.BasicAckAsync(ea.DeliveryTag, false);
+                        var perfil_creado = exists != null;
+
+                        if (perfil_creado)
+                        {
+                            Console.WriteLine("Perfil ya existe, ignorando mensaje duplicado");
+
+                            await channel.BasicAckAsync(ea.DeliveryTag, false);
+
+                            return;
+                        }
+
+                        /// <summary>
+                        /// Creación automática del perfil basado en el evento recibido.
+                        /// </summary>
+                        Profile profile = new Profile
+                        {
+                            Id = employeeMessage.RootElement.GetProperty("Id").ToString(),
+                            Name = employeeMessage.RootElement.GetProperty("NameUser").GetString(),
+                            Email = employeeMessage.RootElement.GetProperty("Email").GetString()
+                        };
+
+                        await profileService.AddProfileAsync(profile);
+
+                        /// <summary>
+                        /// Envío de notificación por correo electrónico tras la creación del perfil.
+                        /// </summary>
+                        if (profile.Email != null && profile.Name != null)
+                        {
+                            await emailService.SendProfileCreatedEmailAsync(
+                                profile.Email,
+                                profile.Name
+                            );
+
+                            /// <summary>
+                            /// Confirma manualmente la correcta recepción y procesamiento del mensaje,
+                            /// evitando que RabbitMQ lo reenvíe nuevamente.
+                            /// </summary>
+                            await channel.BasicAckAsync(ea.DeliveryTag, false);
+                        }
+                        else
+                        {
+                            Console.WriteLine(
+                                "Email o nombre no disponibles, no se enviará notificación."
+                            );
+
+                            /// <summary>
+                            /// Confirma manualmente la correcta recepción y procesamiento del mensaje,
+                            /// evitando que RabbitMQ lo reenvíe nuevamente.
+                            /// </summary>
+                            await channel.BasicAckAsync(ea.DeliveryTag, false);
+                        }
 
                         return;
                     }
-
-                    /// <summary>
-                    /// Creación automática del perfil basado en el evento recibido.
-                    /// </summary>
-                    Profile profile = new Profile
-                    {
-                        Id = employeeMessage.RootElement.GetProperty("Id").ToString(),
-                        Name = employeeMessage.RootElement.GetProperty("NameUser").GetString(),
-                        Email = employeeMessage.RootElement.GetProperty("Email").GetString()
-                    };
-
-                    await profileService.AddProfileAsync(profile);
-
-                    /// <summary>
-                    /// Envío de notificación por correo electrónico tras la creación del perfil.
-                    /// </summary>
-                    if (profile.Email != null && profile.Name != null)
-                    {
-                        await emailService.SendProfileCreatedEmailAsync(
-                            profile.Email,
-                            profile.Name
-                        );
-
-                        await channel.BasicAckAsync(ea.DeliveryTag, false);
-                    }
-                    else
-                    {
-                        Console.WriteLine(
-                            "Email o nombre no disponibles, no se enviará notificación."
-                        );
-
-                        await channel.BasicAckAsync(ea.DeliveryTag, false);
-                    }
-
-                    return;
                 }
-            }
-            catch (System.Text.Json.JsonException ex)
-            {
-                Console.WriteLine($"Error al deserializar el mensaje: {ex.Message}");
-            }
-
-            try
-            {
-                /// <summary>
-                /// Procesamiento del evento de eliminación de empleado.
-                /// </summary>
-                var deleteMessage =
-                    System.Text.Json.JsonSerializer.Deserialize<MessageRabbitDeleteEmployee>(json);
-
-                if (deleteMessage != null)
+                catch (System.Text.Json.JsonException ex)
                 {
-                    await profileService.DeleteProfileAsync(deleteMessage.Id.ToString());
+                    Console.WriteLine($"Error al deserializar el mensaje: {ex.Message}");
+                }
 
-                    return;
+            }
+            /// <summary>
+            /// Procesa el evento de eliminación de empleado.
+            /// Cuando se recibe este evento, se elimina el perfil correspondiente
+            /// en el microservicio de perfiles.
+            /// </summary>
+            else if (routingkey == "employee.delete")
+            {
+                Console.WriteLine("Mensaje recibido: Eliminación de empleado");
+
+                try
+                {
+                    /// <summary>
+                    /// Procesamiento del evento de eliminación de empleado.
+                    /// </summary>
+                    var deleteMessage =
+                        System.Text.Json.JsonSerializer.Deserialize<MessageRabbitDeleteEmployee>(json);
+
+                    if (deleteMessage != null)
+                    {
+                        await profileService.DeleteProfileAsync(deleteMessage.Id.ToString());
+
+                        /// <summary> Obtengo las variables para el envio del
+                        /// correo electrónico tras la eliminación del perfil.
+                        /// </summary>
+                        var nombre_empleado = deleteMessage.NameUser;
+                        var email_empleado = deleteMessage.Email;
+
+                        /// <summary>
+                        /// Envío de notificación por correo electrónico tras la eliminación del perfil.
+                        /// </summary>
+                        if (email_empleado != null && nombre_empleado != null)
+                        {
+                            await emailService.SendProfileDeletedEmailAsync(
+                                email_empleado,
+                                nombre_empleado
+                            );
+
+                            /// <summary>
+                            /// Confirma manualmente la correcta recepción y procesamiento del mensaje,
+                            /// evitando que RabbitMQ lo reenvíe nuevamente.
+                            /// </summary>
+                            await channel.BasicAckAsync(ea.DeliveryTag, false);
+                        }
+                        else
+                        {
+                            Console.WriteLine(
+                                "Email o nombre no disponibles, no se enviará notificación."
+                            );
+
+                            /// <summary>
+                            /// Confirma manualmente la correcta recepción y procesamiento del mensaje,
+                            /// evitando que RabbitMQ lo reenvíe nuevamente.
+                            /// </summary>
+                            await channel.BasicAckAsync(ea.DeliveryTag, false);
+                        }
+
+                        return;
+                    }
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    Console.WriteLine($"Error al deserializar el mensaje: {ex.Message}");
                 }
             }
-            catch (System.Text.Json.JsonException ex)
+            /// <summary>
+            /// Maneja mensajes cuyo routing key no coincide con los eventos esperados.
+            /// Permite detectar eventos no soportados o errores de integración entre microservicios.
+            /// </summary>
+            else
             {
-                Console.WriteLine($"Error al deserializar el mensaje: {ex.Message}");
+                Console.WriteLine($"Mensaje recibido con routing key desconocida: {routingkey}");
             }
         };
 

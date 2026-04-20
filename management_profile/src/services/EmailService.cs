@@ -100,4 +100,69 @@ public class EmailService : IEmailService
             Console.WriteLine($"Error enviando correo: {ex.Message}");
         }
     }
+
+    public async Task SendProfileDeletedEmailAsync(string toEmail, string name)
+    {
+        try
+        {
+            var email = _configuration["EmailSettings:Email"];
+            var password = _configuration["EmailSettings:Password"];
+
+            Console.WriteLine($"Preparando envío a {toEmail}");
+
+            var smtpClient = new SmtpClient("smtp.gmail.com")
+            {
+                /// <summary>
+                /// Puerto estándar TLS para SMTP en Gmail.
+                /// </summary>
+                Port = 587,
+
+                /// <summary>
+                /// Credenciales utilizadas para autenticación SMTP.
+                /// </summary>
+                Credentials = new NetworkCredential(email, password),
+
+                /// <summary>
+                /// Habilita conexión segura mediante SSL/TLS.
+                /// </summary>
+                EnableSsl = true
+            };
+
+            var message = new MailMessage
+            {
+                /// <summary>
+                /// Dirección remitente del correo.
+                /// </summary>
+                From = new MailAddress(email!),
+
+                /// <summary>
+                /// Asunto del correo electrónico.
+                /// </summary>
+                Subject = "Perfil eliminado correctamente",
+
+                /// <summary>
+                /// Contenido del mensaje enviado al usuario.
+                /// </summary>
+                Body = $"Hola {name}, para notificarte que tu perfil ha sido eliminado.",
+
+                /// <summary>
+                /// Indica si el cuerpo del mensaje está en formato HTML.
+                /// </summary>
+                IsBodyHtml = false
+            };
+
+            message.To.Add(toEmail);
+
+            await smtpClient.SendMailAsync(message);
+
+            Console.WriteLine($"Correo enviado correctamente a {toEmail}");
+        }
+        catch (Exception ex)
+        {
+            /// <summary>
+            /// Manejo básico de errores durante el envío del correo.
+            /// </summary>
+            Console.WriteLine($"Error enviando correo: {ex.Message}");
+        }
+    }
 }
